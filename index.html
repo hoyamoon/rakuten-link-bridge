@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Redirecting...</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f5f5f5;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  color: #333;
+}
+.container {
+  text-align: center;
+  padding: 40px 24px;
+  max-width: 360px;
+}
+.spinner {
+  width: 40px; height: 40px;
+  border: 3px solid #e0e0e0;
+  border-top-color: #bf0000;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 20px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.msg { font-size: 14px; color: #666; line-height: 1.6; }
+.fallback-btn {
+  display: none;
+  margin-top: 24px;
+  padding: 14px 32px;
+  background: #bf0000;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.fallback-btn:active { background: #990000; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="spinner" id="spinner"></div>
+  <p class="msg" id="msg">楽天市場アプリで開いています...</p>
+  <a class="fallback-btn" id="fallbackBtn" href="#">ブラウザで開く</a>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ============================================================
+  // Link Bridge v1.0
+  //
+  // 역할: autoVerify 우회를 위한 중간 랜딩 페이지
+  // 흐름: short.io → 이 페이지 → Intent URL → Rakuten app
+  //
+  // URL 파라미터:
+  //   ?intent={encodeURIComponent(Intent URL)}
+  //   &fallback={encodeURIComponent(Fallback URL)}
+  //   &aff={encodeURIComponent(Affiliate URL)}  [선택]
+  // ============================================================
+
+  var params = new URLSearchParams(window.location.search);
+  var intentUrl = params.get('intent');
+  var fallbackUrl = params.get('fallback');
+  var affUrl = params.get('aff');
+
+  // 필수 파라미터 확인
+  if (!intentUrl || !fallbackUrl) {
+    document.getElementById('msg').textContent = 'リンクエラーが発生しました。';
+    document.getElementById('spinner').style.display = 'none';
+    return;
+  }
+
+  // 디코딩
+  intentUrl = decodeURIComponent(intentUrl);
+  fallbackUrl = decodeURIComponent(fallbackUrl);
+  if (affUrl) affUrl = decodeURIComponent(affUrl);
+
+  // Fallback 버튼 설정
+  var fallbackBtn = document.getElementById('fallbackBtn');
+  fallbackBtn.href = fallbackUrl;
+
+  // ---- Step 1: 어필리에이트 클릭 카운트 (백그라운드) ----
+  // fetch()는 navigation이 아니므로 App Links에 의해 가로채지지 않음
+  if (affUrl) {
+    try {
+      // redirect:'manual'로 리다이렉트 체인 차단 → 첫 요청만 전송 → 클릭 카운트
+      fetch(affUrl, {
+        method: 'GET',
+        redirect: 'manual',
+        mode: 'no-cors',
+        credentials: 'omit'
+      }).catch(function() { /* 실패해도 계속 진행 */ });
+    } catch(e) {
+      // fetch 미지원 환경 → Image beacon 폴백
+      var img = new Image();
+      img.src = affUrl;
+    }
+  }
+
+  // ---- Step 2: Android 판별 ----
+  var isAndroid = /Android/i.test(navigator.userAgent);
+
+  if (isAndroid) {
+    // ---- Step 3: Intent URL 실행 ----
+    // 방법 1: 숨겨진 iframe으로 intent:// 트리거 (WebView 호환성 최고)
+    var launched = false;
+
+    // 방법 1: iframe 방식
+    try {
+      var iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = intentUrl;
+      document.body.appendChild(iframe);
+      launched = true;
+    } catch(e) {}
+
+    // 방법 2: 100ms 후 window.location 방식 (iframe 실패 시 보완)
+    setTimeout(function() {
+      try {
+        window.location.href = intentUrl;
+      } catch(e) {}
+    }, 100);
+
+    // ---- Step 4: 앱 미설치 시 Fallback (2초 후) ----
+    setTimeout(function() {
+      // 앱이 실행되었으면 이 페이지는 백그라운드로 감 → 이 코드 실행 안됨
+      // 여전히 이 페이지에 있다면 → 앱 미설치 → 웹으로 이동
+      document.getElementById('msg').textContent = 'アプリが見つかりません。ブラウザで開きます...';
+      fallbackBtn.style.display = 'inline-block';
+
+      // 자동 fallback (3초 후)
+      setTimeout(function() {
+        window.location.href = fallbackUrl;
+      }, 1000);
+    }, 2000);
+
+  } else {
+    // ---- iOS/PC: 바로 Fallback URL로 이동 ----
+    document.getElementById('msg').textContent = 'リダイレクト中...';
+    setTimeout(function() {
+      window.location.href = fallbackUrl;
+    }, 100);
+  }
+
+})();
+</script>
+</body>
+</html>
