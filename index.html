@@ -5,52 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Redirecting...</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #f5f5f5;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 100vh;
-  color: #333;
-}
-.container {
-  text-align: center;
-  padding: 40px 24px;
-  max-width: 360px;
-}
-.spinner {
-  width: 40px; height: 40px;
-  border: 3px solid #e0e0e0;
-  border-top-color: #bf0000;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  margin: 0 auto 20px;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-.msg { font-size: 14px; color: #666; line-height: 1.6; }
-.fallback-btn {
-  display: none;
-  margin-top: 24px;
-  padding: 14px 32px;
-  background: #bf0000;
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  text-decoration: none;
-}
-.fallback-btn:active { background: #990000; }
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f5;display:flex;justify-content:center;align-items:center;min-height:100vh;color:#333}
+.container{text-align:center;padding:40px 24px;max-width:360px}
+.spinner{width:40px;height:40px;border:3px solid #e0e0e0;border-top-color:#bf0000;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.msg{font-size:14px;color:#666;line-height:1.6}
+.fallback-btn{display:none;margin-top:24px;padding:14px 32px;background:#bf0000;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none}
+.fallback-btn:active{background:#990000}
+.debug{display:none;margin-top:20px;text-align:left;font-size:11px;color:#999;background:#fff;border:1px solid #eee;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;word-break:break-all;line-height:1.5}
+.debug .ok{color:#2a7}
+.debug .err{color:#c44}
+.debug .info{color:#58c}
 </style>
 </head>
 <body>
 <div class="container">
   <div class="spinner" id="spinner"></div>
   <p class="msg" id="msg">楽天市場アプリで開いています...</p>
-  <a class="fallback-btn" id="fallbackBtn" href="#">ブラウザで開く</a>
+  <a class="fallback-btn" id="fallbackBtn">ブラウザで開く</a>
+  <div class="debug" id="debug"></div>
 </div>
 
 <script>
@@ -58,95 +32,283 @@ body {
   'use strict';
 
   // ============================================================
-  // Link Bridge v1.0
+  // Link Bridge v2.0  —  2026.03.27
   //
-  // 역할: autoVerify 우회를 위한 중간 랜딩 페이지
-  // 흐름: short.io → 이 페이지 → Intent URL → Rakuten app
+  // v1.0 → v2.0 변경사항:
+  //
+  // [BUG-FIX] decodeURIComponent() 이중 디코딩 제거
+  //   → v1.0에서 Intent URL의 S.browser_fallback_url 인코딩이
+  //     깨지는 버그 수정. params.get()이 이미 1회 디코딩하므로
+  //     추가 디코딩 불필요.
+  //
+  // [FIX-1] 클릭 등록 완료 후 Intent 실행 (레이스 컨디션 해소)
+  //   → fetch + Image 듀얼 트래킹, 완료 대기 후 Intent 발사
+  //   → 최대 500ms 대기 (타임아웃)
+  //
+  // [FIX-2] Visibility API로 앱 실행 감지
+  //   → document.hidden / blur / pagehide 이벤트 모니터링
+  //   → 앱이 열리면 fallback 취소
+  //
+  // [FIX-3] Fallback: Chrome Intent로 외부 브라우저 유도
+  //   → WebView 내 autoVerify 완전 우회
+  //   → Chrome → Samsung Browser → 직접이동 순서
+  //   → 외부 브라우저에서 hb.afl 리다이렉트 체인 정상 완료
+  //   → 쿠키 세팅 + 매출 귀속 정상화
+  //
+  // [NEW] 디버그 모드 (?debug=1 추가 시 활성화)
   //
   // URL 파라미터:
   //   ?intent={encodeURIComponent(Intent URL)}
   //   &fallback={encodeURIComponent(Fallback URL)}
   //   &aff={encodeURIComponent(Affiliate URL)}  [선택]
+  //   &debug=1  [선택, 디버그 로그 표시]
   // ============================================================
 
-  var params = new URLSearchParams(window.location.search);
-  var intentUrl = params.get('intent');
-  var fallbackUrl = params.get('fallback');
-  var affUrl = params.get('aff');
+  var params  = new URLSearchParams(window.location.search);
+  var isDebug = params.get('debug') === '1';
 
-  // 필수 파라미터 확인
+  // ---- params.get()은 이미 1회 URL 디코딩을 수행함 ----
+  // ---- 추가 decodeURIComponent() 호출하지 않음 (v1.0 버그 수정) ----
+  var intentUrl  = params.get('intent');
+  var fallbackUrl = params.get('fallback');
+  var affUrl     = params.get('aff');
+
+  // 디버그 로거
+  var debugEl = document.getElementById('debug');
+  if (isDebug) debugEl.style.display = 'block';
+
+  function log(msg, type) {
+    if (!isDebug) return;
+    var cls = type || 'info';
+    var t = new Date();
+    var ts = t.getMinutes() + ':' + t.getSeconds() + '.' +
+             String(t.getMilliseconds()).padStart(3, '0');
+    debugEl.innerHTML += '<div class="' + cls + '">[' + ts + '] ' + msg + '</div>';
+    debugEl.scrollTop = debugEl.scrollHeight;
+  }
+
+  // ---- 필수 파라미터 확인 ----
   if (!intentUrl || !fallbackUrl) {
     document.getElementById('msg').textContent = 'リンクエラーが発生しました。';
     document.getElementById('spinner').style.display = 'none';
+    log('ERROR: intent 또는 fallback 파라미터 없음', 'err');
     return;
   }
 
-  // 디코딩
-  intentUrl = decodeURIComponent(intentUrl);
-  fallbackUrl = decodeURIComponent(fallbackUrl);
-  if (affUrl) affUrl = decodeURIComponent(affUrl);
+  log('Intent URL: ' + intentUrl.substring(0, 80) + '...', 'info');
+  log('Fallback URL: ' + fallbackUrl.substring(0, 80) + '...', 'info');
+  log('Aff URL: ' + (affUrl ? affUrl.substring(0, 80) + '...' : '없음'), 'info');
 
-  // Fallback 버튼 설정
   var fallbackBtn = document.getElementById('fallbackBtn');
-  fallbackBtn.href = fallbackUrl;
+  var isAndroid   = /Android/i.test(navigator.userAgent);
+  var appLaunched = false;
 
-  // ---- Step 1: 어필리에이트 클릭 카운트 (백그라운드) ----
-  // fetch()는 navigation이 아니므로 App Links에 의해 가로채지지 않음
-  if (affUrl) {
-    try {
-      // redirect:'manual'로 리다이렉트 체인 차단 → 첫 요청만 전송 → 클릭 카운트
-      fetch(affUrl, {
-        method: 'GET',
-        redirect: 'manual',
-        mode: 'no-cors',
-        credentials: 'omit'
-      }).catch(function() { /* 실패해도 계속 진행 */ });
-    } catch(e) {
-      // fetch 미지원 환경 → Image beacon 폴백
-      var img = new Image();
-      img.src = affUrl;
+  log('Platform: ' + (isAndroid ? 'Android' : 'Other') + ' / UA: ' + navigator.userAgent.substring(0, 60), 'info');
+
+  // ============================================================
+  // 앱 실행 감지 (Visibility API + blur + pagehide)
+  // ============================================================
+  function markLaunched(source) {
+    if (!appLaunched) {
+      appLaunched = true;
+      log('앱 실행 감지! (via ' + source + ')', 'ok');
     }
   }
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) markLaunched('visibilitychange');
+  });
+  window.addEventListener('blur', function() { markLaunched('blur'); });
+  window.addEventListener('pagehide', function() { markLaunched('pagehide'); });
 
-  // ---- Step 2: Android 판별 ----
-  var isAndroid = /Android/i.test(navigator.userAgent);
+  // ============================================================
+  // Step 1: 어필리에이트 클릭 등록 (듀얼 방식)
+  //
+  // - fetch(): no-cors 모드로 서버에 GET 요청 전송
+  //   → 서버 측 클릭 카운트 등록
+  //   → credentials:'omit' (쿠키 불필요 — 앱 경유 시 앱이 처리)
+  //
+  // - Image beacon: 동일 URL로 Image 요청 전송 (중복 보험)
+  //   → sub-resource 요청이므로 autoVerify에 가로채이지 않음
+  //
+  // - 둘 중 하나가 완료되면 callback 실행 (최대 500ms 대기)
+  // ============================================================
+  function registerClick(callback) {
+    if (!affUrl) {
+      log('aff URL 없음 → 클릭 등록 스킵', 'info');
+      callback();
+      return;
+    }
 
-  if (isAndroid) {
-    // ---- Step 3: Intent URL 실행 ----
-    // 방법 1: 숨겨진 iframe으로 intent:// 트리거 (WebView 호환성 최고)
-    var launched = false;
+    var settled = false;
+    function done(source) {
+      if (settled) return;
+      settled = true;
+      log('클릭 등록 완료 (via ' + source + ')', 'ok');
+      callback();
+    }
 
-    // 방법 1: iframe 방식
+    // Method A: fetch
+    log('fetch 클릭 등록 시작...', 'info');
     try {
-      var iframe = document.createElement('iframe');
-      iframe.style.display = 'none';
-      iframe.src = intentUrl;
-      document.body.appendChild(iframe);
-      launched = true;
-    } catch(e) {}
+      fetch(affUrl, {
+        method: 'GET',
+        mode: 'no-cors',
+        credentials: 'omit'
+      }).then(function() {
+        done('fetch');
+      }).catch(function(e) {
+        log('fetch 실패: ' + e.message, 'err');
+        done('fetch-error');
+      });
+    } catch(e) {
+      log('fetch 미지원: ' + e.message, 'err');
+    }
 
-    // 방법 2: 100ms 후 window.location 방식 (iframe 실패 시 보완)
+    // Method B: Image beacon
+    log('Image beacon 클릭 등록 시작...', 'info');
+    try {
+      var img = new Image();
+      img.onload = function() { done('img-load'); };
+      img.onerror = function() { done('img-error'); };
+      img.src = affUrl;
+    } catch(e) {
+      log('Image beacon 실패: ' + e.message, 'err');
+    }
+
+    // Safety timeout: 500ms 후 무조건 진행
+    setTimeout(function() { done('timeout-500ms'); }, 500);
+  }
+
+  // ============================================================
+  // Step 2: Intent URL 실행 (앱 실행)
+  //
+  // 방법 1: 숨겨진 iframe (WebView 호환성 높음)
+  // 방법 2: 150ms 후 window.location (iframe 실패 보완)
+  // ============================================================
+  function fireIntent() {
+    log('Intent 실행 시작...', 'info');
+
+    // 2a: Hidden iframe
+    try {
+      var f = document.createElement('iframe');
+      f.style.cssText = 'display:none;width:0;height:0;border:0';
+      f.src = intentUrl;
+      document.body.appendChild(f);
+      log('iframe.src = intent URL ✓', 'ok');
+    } catch(e) {
+      log('iframe 방식 실패: ' + e.message, 'err');
+    }
+
+    // 2b: 150ms 후 window.location (backup)
     setTimeout(function() {
+      if (!appLaunched) {
+        log('window.location = intent URL (backup)', 'info');
+        try {
+          window.location.href = intentUrl;
+        } catch(e) {
+          log('location 방식 실패: ' + e.message, 'err');
+        }
+      }
+    }, 150);
+  }
+
+  // ============================================================
+  // Step 3: Fallback — 외부 브라우저에서 열기
+  //
+  // 핵심: WebView 안에서 hb.afl URL로 직접 이동하면
+  //        v14.2.0의 autoVerify가 가로채서 쿠키 미세팅
+  //
+  // 해결: Chrome/Samsung Browser Intent로 외부 브라우저 강제 실행
+  //       → 외부 브라우저에서 hb.afl 리다이렉트 체인 정상 완료
+  //       → 쿠키 세팅 + 매출 귀속 정상
+  //
+  // Fallback 체인:
+  //   ① Chrome Intent → ② Samsung Browser Intent → ③ 직접 이동
+  // ============================================================
+  function openInBrowser(url) {
+    var path = url.replace(/^https?:\/\//, '');
+    var encoded = encodeURIComponent(url);
+
+    // ① Chrome
+    log('Chrome Intent 시도...', 'info');
+    var chromeIntent = 'intent://' + path +
+      '#Intent;scheme=https;package=com.android.chrome;' +
+      'S.browser_fallback_url=' + encoded + ';end';
+
+    try {
+      window.location.href = chromeIntent;
+    } catch(e) {
+      log('Chrome Intent 실패: ' + e.message, 'err');
+    }
+
+    // ② Samsung Browser (1초 후, Chrome 미설치 시)
+    setTimeout(function() {
+      if (appLaunched) return;
+      log('Samsung Browser Intent 시도...', 'info');
+      var samsungIntent = 'intent://' + path +
+        '#Intent;scheme=https;package=com.sec.android.app.sbrowser;' +
+        'S.browser_fallback_url=' + encoded + ';end';
       try {
-        window.location.href = intentUrl;
-      } catch(e) {}
-    }, 100);
+        window.location.href = samsungIntent;
+      } catch(e) {
+        log('Samsung Intent 실패: ' + e.message, 'err');
+      }
+    }, 1000);
 
-    // ---- Step 4: 앱 미설치 시 Fallback (2초 후) ----
+    // ③ 직접 이동 (2초 후, 최후 수단)
     setTimeout(function() {
-      // 앱이 실행되었으면 이 페이지는 백그라운드로 감 → 이 코드 실행 안됨
-      // 여전히 이 페이지에 있다면 → 앱 미설치 → 웹으로 이동
-      document.getElementById('msg').textContent = 'アプリが見つかりません。ブラウザで開きます...';
-      fallbackBtn.style.display = 'inline-block';
-
-      // 자동 fallback (3초 후)
-      setTimeout(function() {
-        window.location.href = fallbackUrl;
-      }, 1000);
+      if (appLaunched) return;
+      log('직접 이동 (최후 수단)...', 'err');
+      window.location.href = url;
     }, 2000);
+  }
+
+  function doFallback() {
+    if (appLaunched) {
+      log('앱 이미 실행됨 → fallback 취소', 'ok');
+      return;
+    }
+
+    log('Intent 실패 → 외부 브라우저 fallback 시작', 'err');
+    document.getElementById('msg').textContent = 'ブラウザで開きます...';
+    fallbackBtn.style.display = 'inline-block';
+
+    // 수동 버튼 클릭 핸들러
+    fallbackBtn.onclick = function(e) {
+      e.preventDefault();
+      log('사용자 수동 클릭 → 외부 브라우저 열기', 'info');
+      openInBrowser(fallbackUrl);
+    };
+
+    // 자동 fallback (800ms 후)
+    setTimeout(function() {
+      if (!appLaunched) openInBrowser(fallbackUrl);
+    }, 800);
+  }
+
+  // ============================================================
+  // Main Flow
+  // ============================================================
+  if (isAndroid) {
+    log('=== Android 흐름 시작 ===', 'info');
+
+    // Step 1 → (완료 대기) → Step 2 → (2.5초 대기) → Step 3
+    registerClick(function() {
+      fireIntent();
+
+      // 2.5초 후 앱 미실행 시 fallback
+      setTimeout(function() {
+        if (!appLaunched) {
+          doFallback();
+        } else {
+          log('앱 정상 실행됨 → 완료', 'ok');
+        }
+      }, 2500);
+    });
 
   } else {
-    // ---- iOS/PC: 바로 Fallback URL로 이동 ----
+    // iOS / PC: 바로 fallback URL로 이동
+    log('=== iOS/PC 흐름: fallback 직행 ===', 'info');
     document.getElementById('msg').textContent = 'リダイレクト中...';
     setTimeout(function() {
       window.location.href = fallbackUrl;
