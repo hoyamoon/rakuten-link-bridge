@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Debug Extended</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#f5f5f5;padding:12px;color:#333;font-size:13px;line-height:1.5}
+.c{max-width:600px;margin:0 auto}
+h1{font-size:16px;margin-bottom:12px;color:#009688}
+.s{background:#fff;border:2px solid #009688;border-radius:8px;padding:10px;margin-bottom:12px}
+.s h2{font-size:13px;margin-bottom:8px;color:#009688}
+.t{padding:5px 0;border-bottom:1px dashed #ddd;display:flex;justify-content:space-between}
+.t:last-child{border-bottom:none}
+.l{font-weight:600;font-size:12px}
+.r{font-family:monospace;font-size:12px}
+.ok{color:#2a7}.err{color:#c44}.to{color:#f80}.in{color:#58c}
+.log{background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px;margin-bottom:12px;max-height:50vh;overflow-y:auto;font-family:monospace;font-size:10px;word-break:break-all;line-height:1.5}
+.log div{margin-bottom:3px}
+.b{display:inline-block;background:#009688;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;margin-top:8px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="c">
+<h1>Debug Extended Test</h1>
+<div class="s">
+<h2>4 Trials (5s timeout)</h2>
+<div class="t"><span class="l">T1: fetch no-cors omit</span><span class="r" id="t1">...</span></div>
+<div class="t"><span class="l">T2: Image beacon</span><span class="r" id="t2">...</span></div>
+<div class="t"><span class="l">T3: iframe load</span><span class="r" id="t3">...</span></div>
+<div class="t"><span class="l">T4: fetch cred=include</span><span class="r" id="t4">...</span></div>
+</div>
+<div class="log" id="log"></div>
+<a class="b" id="ib" style="display:none">Open in App</a>
+</div>
+<iframe id="tf" style="display:none;width:0;height:0;border:0"></iframe>
+<script>
+(function(){
+'use strict';
+var p=new URLSearchParams(window.location.search);
+var iu=p.get('intent'),fu=p.get('fallback'),au=p.get('aff')||fu;
+var le=document.getElementById('log'),st=Date.now();
+function log(m,c){c=c||'in';var e=((Date.now()-st)/1000).toFixed(3);var d=document.createElement('div');d.className=c;d.textContent='['+e+'s] '+m;le.appendChild(d);le.scrollTop=le.scrollHeight;}
+function sr(id,t,c){var e=document.getElementById(id);if(e.textContent==='...'){e.textContent=t;e.className='r '+c;}}
+if(!au){log('ERR: no aff URL','err');return;}
+log('=== Test Start ===','in');
+log('Aff: ...'+au.substring(au.length-60),'in');
+log('UA: '+navigator.userAgent.substring(0,60),'in');
+log('Origin: '+window.location.origin,'in');
+log('Ref: '+(document.referrer||'(none)'),'in');
+var t1=Date.now();log('T1: fetch no-cors omit start','in');
+fetch(au,{method:'GET',mode:'no-cors',credentials:'omit'}).then(function(r){var e=Date.now()-t1;log('T1: ok '+e+'ms type='+r.type+' status='+r.status,'ok');sr('t1',e+'ms OK','ok');}).catch(function(e){var x=Date.now()-t1;log('T1: fail '+x+'ms - '+e.message,'err');sr('t1',x+'ms FAIL','err');});
+setTimeout(function(){sr('t1','5000+ no resp','to');log('T1: 5s timeout','to');},5000);
+var t2=Date.now();log('T2: Image beacon start','in');
+var img=new Image();
+img.onload=function(){var e=Date.now()-t2;log('T2: onload '+e+'ms','ok');sr('t2',e+'ms onload','ok');};
+img.onerror=function(){var e=Date.now()-t2;log('T2: onerror '+e+'ms (got response)','ok');sr('t2',e+'ms onerr','ok');};
+img.src=au;
+setTimeout(function(){sr('t2','5000+ no resp','to');log('T2: 5s timeout no img event','to');},5000);
+var t3=Date.now();log('T3: iframe load start','in');
+var fr=document.getElementById('tf');
+fr.onload=function(){var e=Date.now()-t3;log('T3: iframe onload '+e+'ms','ok');sr('t3',e+'ms OK','ok');};
+fr.onerror=function(){var e=Date.now()-t3;log('T3: iframe onerror '+e+'ms','err');sr('t3',e+'ms FAIL','err');};
+try{fr.src=au;}catch(e){log('T3: iframe set fail '+e.message,'err');sr('t3','N/A','err');}
+setTimeout(function(){sr('t3','5000+ no resp','to');log('T3: 5s timeout','to');},5000);
+var t4=Date.now();log('T4: fetch include start','in');
+fetch(au,{method:'GET',mode:'no-cors',credentials:'include'}).then(function(r){var e=Date.now()-t4;log('T4: ok '+e+'ms type='+r.type,'ok');sr('t4',e+'ms OK','ok');}).catch(function(e){var x=Date.now()-t4;log('T4: fail '+x+'ms - '+e.message,'err');sr('t4',x+'ms FAIL','err');});
+setTimeout(function(){sr('t4','5000+ no resp','to');log('T4: 5s timeout','to');},5000);
+setTimeout(function(){log('=== All trials done ===','in');log('Take screenshot now','in');if(iu){var b=document.getElementById('ib');b.href=iu;b.style.display='inline-block';}},6000);
+})();
+</script>
+</body>
+</html>
