@@ -32,7 +32,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   'use strict';
 
   // ============================================================
-  // Link Bridge v2.0  —  2026.03.27
+  // Link Bridge v2.1  —  2026.05.23
+  //
+  // v2.0 → v2.1 변경사항:
+  //
+  // [FIX-#1] blur 오탐 데드엔드 방지
+  //   → appLaunched 값과 무관하게, 4초 뒤에도 페이지가 화면에 떠
+  //     있으면(document.hidden=false → 실제로는 앱 미실행) 수동
+  //     fallback 버튼을 강제 노출하는 안전망 추가.
+  //
+  // [FIX-#3] Chrome/Samsung Intent의 S.browser_fallback_url 제거
+  //   → 브라우저 미설치 시 WebView가 hb.afl로 조기 이동해
+  //     autoVerify에 가로채이던 문제 차단. 이탈 여부를
+  //     document.hidden으로 판정하고 타이머 체인
+  //     (Chrome→Samsung→직접이동)으로 단계적 escalation.
+  //
+  // [FIX-#2] 클릭 등록 safety timeout 3000ms → 800ms 단축
+  //   → 관련 주석을 실제 값과 일치시킴. 요청은 발사 즉시 서버에
+  //     도달하므로 응답 완료까지 길게 대기할 필요 없음.
   //
   // v1.0 → v2.0 변경사항:
   //
@@ -43,7 +60,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   //
   // [FIX-1] 클릭 등록 완료 후 Intent 실행 (레이스 컨디션 해소)
   //   → fetch + Image 듀얼 트래킹, 완료 대기 후 Intent 발사
-  //   → 최대 500ms 대기 (타임아웃)
+  //   → 최대 800ms 대기 (타임아웃)
   //
   // [FIX-2] Visibility API로 앱 실행 감지
   //   → document.hidden / blur / pagehide 이벤트 모니터링
@@ -130,7 +147,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // - Image beacon: 동일 URL로 Image 요청 전송 (중복 보험)
   //   → sub-resource 요청이므로 autoVerify에 가로채이지 않음
   //
-  // - 둘 중 하나가 완료되면 callback 실행 (최대 500ms 대기)
+  // - 둘 중 하나가 완료되면 callback 실행 (최대 800ms 대기)
   // ============================================================
   function registerClick(callback) {
     if (!affUrl) {
@@ -175,8 +192,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       log('Image beacon 실패: ' + e.message, 'err');
     }
 
-    // Safety timeout: 500ms 후 무조건 진행
-    setTimeout(function() { done('timeout-3000ms'); }, 3000);
+    // Safety timeout: 800ms 후 무조건 진행
+    setTimeout(function() { done('timeout-800ms'); }, 800);
   }
 
   // ============================================================
@@ -227,13 +244,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // ============================================================
   function openInBrowser(url) {
     var path = url.replace(/^https?:\/\//, '');
-    var encoded = encodeURIComponent(url);
 
     // ① Chrome
+    //   S.browser_fallback_url 제거(FIX-#3): 미설치 시 WebView가
+    //   hb.afl로 조기 이동해 autoVerify에 가로채이는 문제를 차단한다.
+    //   브라우저 실행 성공 여부는 document.hidden(화면 이탈)으로 판정.
     log('Chrome Intent 시도...', 'info');
     var chromeIntent = 'intent://' + path +
-      '#Intent;scheme=https;package=com.android.chrome;' +
-      'S.browser_fallback_url=' + encoded + ';end';
+      '#Intent;scheme=https;package=com.android.chrome;end';
 
     try {
       window.location.href = chromeIntent;
@@ -241,13 +259,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       log('Chrome Intent 실패: ' + e.message, 'err');
     }
 
-    // ② Samsung Browser (1초 후, Chrome 미설치 시)
+    // ② Samsung Browser (1초 후, 아직 화면에 남아 있으면 = Chrome 실패)
     setTimeout(function() {
-      if (appLaunched) return;
+      if (document.hidden) return;   // 이미 외부 브라우저로 이탈
       log('Samsung Browser Intent 시도...', 'info');
       var samsungIntent = 'intent://' + path +
-        '#Intent;scheme=https;package=com.sec.android.app.sbrowser;' +
-        'S.browser_fallback_url=' + encoded + ';end';
+        '#Intent;scheme=https;package=com.sec.android.app.sbrowser;end';
       try {
         window.location.href = samsungIntent;
       } catch(e) {
@@ -255,34 +272,38 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       }
     }, 1000);
 
-    // ③ 직접 이동 (2초 후, 최후 수단)
+    // ③ 직접 이동 (2초 후, 최후 수단 — 직접 이동을 의도적으로 허용)
     setTimeout(function() {
-      if (appLaunched) return;
+      if (document.hidden) return;   // 이미 외부 브라우저로 이탈
       log('직접 이동 (최후 수단)...', 'err');
       window.location.href = url;
     }, 2000);
   }
 
-  function doFallback() {
-    if (appLaunched) {
-      log('앱 이미 실행됨 → fallback 취소', 'ok');
-      return;
-    }
-
-    log('Intent 실패 → 외부 브라우저 fallback 시작', 'err');
-    document.getElementById('msg').textContent = 'ブラウザで開きます...';
+  // 수동 fallback 버튼 노출 (공통) — 스피너 숨김 + 클릭 핸들러 바인딩
+  function showManualFallback() {
+    document.getElementById('spinner').style.display = 'none';
     fallbackBtn.style.display = 'inline-block';
-
-    // 수동 버튼 클릭 핸들러
     fallbackBtn.onclick = function(e) {
       e.preventDefault();
       log('사용자 수동 클릭 → 외부 브라우저 열기', 'info');
       openInBrowser(fallbackUrl);
     };
+  }
 
-    // 자동 fallback (800ms 후)
+  function doFallback() {
+    if (appLaunched) {
+      log('앱 실행 감지됨 → 자동 fallback 보류 (안전망 타이머가 별도 점검)', 'ok');
+      return;
+    }
+
+    log('Intent 실패 → 외부 브라우저 fallback 시작', 'err');
+    document.getElementById('msg').textContent = 'ブラウザで開きます...';
+    showManualFallback();
+
+    // 자동 fallback (800ms 후, 그 사이 화면 이탈하지 않았을 때만)
     setTimeout(function() {
-      if (!appLaunched) openInBrowser(fallbackUrl);
+      if (!appLaunched && !document.hidden) openInBrowser(fallbackUrl);
     }, 800);
   }
 
@@ -291,6 +312,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // ============================================================
   if (isAndroid) {
     log('=== Android 흐름 시작 ===', 'info');
+
+    // ── 안전망(FIX-#1): blur 오탐 등으로 화면 전환이 안 될 때 대비 ──
+    // appLaunched 값과 무관하게, 4초 뒤에도 페이지가 화면에 떠 있으면
+    // (document.hidden=false → 실제로는 앱/브라우저 미실행) 수동 버튼 노출.
+    // 앱이 진짜 열렸다면 페이지는 backgrounded라 이 버튼은 보이지 않는다.
+    setTimeout(function() {
+      if (!document.hidden) {
+        log('안전망 발동: 페이지가 여전히 화면에 있음 → 수동 버튼 노출', 'err');
+        document.getElementById('msg').textContent = 'うまく開けない場合は、下のボタンを押してください。';
+        showManualFallback();
+      }
+    }, 4000);
 
     // Step 1 → (완료 대기) → Step 2 → (2.5초 대기) → Step 3
     registerClick(function() {
