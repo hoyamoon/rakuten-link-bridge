@@ -32,47 +32,43 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   'use strict';
 
   // ============================================================
-  // Link Bridge v2.1  —  2026.05.23
+  // Link Bridge v2.2  —  2026.07.02
   //
-  // v2.0 → v2.1 변경사항:
+  // v2.1 → v2.2 견고성(robustness) 패치.
+  // 문서 R&D v1.0 참고사항 2·3번(autoVerify 우회의 취약성 / 타임아웃
+  // 트레이드오프)을 근본 원인 수준에서 처리한다.
   //
-  // [FIX-#1] blur 오탐 데드엔드 방지
-  //   → appLaunched 값과 무관하게, 4초 뒤에도 페이지가 화면에 떠
-  //     있으면(document.hidden=false → 실제로는 앱 미실행) 수동
-  //     fallback 버튼을 강제 노출하는 안전망 추가.
+  // [ROBUST-A] 앱 실행 감지를 "신호 강도 + 복귀 감지" 상태기계로 교체
+  //   문제(v2.1): visibilitychange·blur·pagehide를 동등 가중치로
+  //     appLaunched=true 처리. blur는 IME/권한 다이얼로그/앱 선택창에서도
+  //     발생하는 오탐 소스라, 한번 오탐 나면 자동 fallback이 억제되고
+  //     오직 4초 안전망만 사용자를 구제(최대 4초 데드타임). 또한 앱이
+  //     포그라운드를 유지하지 못하고 페이지로 되돌아와도(향후 라쿠텐
+  //     intent-filter 변경 / chooser 취소 / 앱 크래시) 감지 못 함.
+  //   해결:
+  //     · strong 신호(visibilitychange→hidden, pagehide)만 확정 실행으로 인정.
+  //     · blur는 weak 힌트 — 250ms 내 document.hidden으로 확인될 때만 인정.
+  //       (bare blur는 무시 → 오탐을 근원에서 제거)
+  //     · 복귀 감지(visibilitychange→visible / pageshow / focus): hidden 직후
+  //       RETURN_WINDOW 내에 돌아오면 앱이 포그라운드 유지 실패로 보고
+  //       수동 fallback을 재무장(re-arm). 사용자가 데드엔드에 갇히지 않는다.
   //
-  // [FIX-#3] Chrome/Samsung Intent의 S.browser_fallback_url 제거
-  //   → 브라우저 미설치 시 WebView가 hb.afl로 조기 이동해
-  //     autoVerify에 가로채이던 문제 차단. 이탈 여부를
-  //     document.hidden으로 판정하고 타이머 체인
-  //     (Chrome→Samsung→직접이동)으로 단계적 escalation.
+  // [ROBUST-B] fetch keepalive로 타임아웃 트레이드오프 제거
+  //   문제(v2.1): 안전 타임아웃 800ms < 문서 4장 측정 응답(585~968ms).
+  //     비-keepalive WebView에서 968ms 비콘 도달 전에 800ms 타임아웃이
+  //     intent를 발사 → 네비게이션이 in-flight 클릭 요청을 취소해
+  //     클릭/매출 귀속 유실 위험.
+  //   해결: fetch에 keepalive:true — GET 요청이 네비게이션 이후에도 완주
+  //     하도록 브라우저가 보장. "응답을 기다려야만 등록"되던 의존이 사라져
+  //     타임아웃 숫자의 트레이드오프 자체가 소멸.
+  //     · keepalive 지원: 소켓 write 확보용 최소 floor(300ms)만 대기.
+  //     · 미지원(구형 WebView): 측정 최악(≈968ms)을 상회하는 ceiling(2000ms)
+  //       까지 대기하되 먼저 응답 오면 즉시 진행(event-based).
   //
-  // [FIX-#2] 클릭 등록 safety timeout 3000ms → 800ms 단축
-  //   → 관련 주석을 실제 값과 일치시킴. 요청은 발사 즉시 서버에
-  //     도달하므로 응답 완료까지 길게 대기할 필요 없음.
-  //
-  // v1.0 → v2.0 변경사항:
-  //
-  // [BUG-FIX] decodeURIComponent() 이중 디코딩 제거
-  //   → v1.0에서 Intent URL의 S.browser_fallback_url 인코딩이
-  //     깨지는 버그 수정. params.get()이 이미 1회 디코딩하므로
-  //     추가 디코딩 불필요.
-  //
-  // [FIX-1] 클릭 등록 완료 후 Intent 실행 (레이스 컨디션 해소)
-  //   → fetch + Image 듀얼 트래킹, 완료 대기 후 Intent 발사
-  //   → 최대 800ms 대기 (타임아웃)
-  //
-  // [FIX-2] Visibility API로 앱 실행 감지
-  //   → document.hidden / blur / pagehide 이벤트 모니터링
-  //   → 앱이 열리면 fallback 취소
-  //
-  // [FIX-3] Fallback: Chrome Intent로 외부 브라우저 유도
-  //   → WebView 내 autoVerify 완전 우회
-  //   → Chrome → Samsung Browser → 직접이동 순서
-  //   → 외부 브라우저에서 hb.afl 리다이렉트 체인 정상 완료
-  //   → 쿠키 세팅 + 매출 귀속 정상화
-  //
-  // [NEW] 디버그 모드 (?debug=1 추가 시 활성화)
+  // ── v2.0 → v2.1 (유지) ───────────────────────────────────────
+  //   [FIX-#1] 4초 안전망(화면에 남아 있으면 수동 버튼 강제 노출)
+  //   [FIX-#3] Chrome/Samsung Intent의 S.browser_fallback_url 제거
+  //   [BUG-FIX] decodeURIComponent() 이중 디코딩 제거
   //
   // URL 파라미터:
   //   ?intent={encodeURIComponent(Intent URL)}
@@ -81,14 +77,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   //   &debug=1  [선택, 디버그 로그 표시]
   // ============================================================
 
+  // ---- 튜닝 상수 ----
+  var CLICK_FLOOR_MS   = 300;   // keepalive 지원 시 클릭 등록 최소 대기(소켓 write 확보)
+  var CLICK_CEILING_MS = 2000;  // 비-keepalive 시 상한(측정 최악 968ms 상회 여유)
+  var INTENT_BACKUP_MS = 150;   // iframe 실패 대비 location 백업 지연
+  var APP_DETECT_MS    = 2500;  // intent 후 앱 실행 판정 대기
+  var AUTO_FALLBACK_MS = 800;   // doFallback 진입 후 자동 브라우저 실행 지연
+  var SAFETY_NET_MS    = 4000;  // 데드엔드 방지 수동 버튼 강제 노출
+  var RETURN_WINDOW_MS = 3000;  // 이 시간 내 복귀하면 "앱 유지 실패"로 간주
+
+  function now() { return new Date().getTime(); }
+
   var params  = new URLSearchParams(window.location.search);
   var isDebug = params.get('debug') === '1';
 
   // ---- params.get()은 이미 1회 URL 디코딩을 수행함 ----
   // ---- 추가 decodeURIComponent() 호출하지 않음 (v1.0 버그 수정) ----
-  var intentUrl  = params.get('intent');
+  var intentUrl   = params.get('intent');
   var fallbackUrl = params.get('fallback');
-  var affUrl     = params.get('aff');
+  var affUrl      = params.get('aff');
 
   // 디버그 로거
   var debugEl = document.getElementById('debug');
@@ -118,36 +125,71 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   var fallbackBtn = document.getElementById('fallbackBtn');
   var isAndroid   = /Android/i.test(navigator.userAgent);
-  var appLaunched = false;
 
   log('Platform: ' + (isAndroid ? 'Android' : 'Other') + ' / UA: ' + navigator.userAgent.substring(0, 60), 'info');
 
   // ============================================================
-  // 앱 실행 감지 (Visibility API + blur + pagehide)
+  // [ROBUST-A] 앱 실행 감지 상태기계
+  //
+  //   launched : 앱/외부 브라우저가 포그라운드를 잡았다고 판정된 상태
+  //   strong   : 확정 신호(hidden/pagehide)로 판정되었는지
+  //   hiddenAt : 마지막으로 화면을 벗어난 시각(복귀 창 계산용)
+  //   fired    : intent를 이미 쏘았는지(그 전 신호는 복귀 재무장에서 제외)
+  //
+  // 핵심: strong 신호만 확정. blur는 250ms 내 document.hidden으로 확인될
+  //       때만 인정(오탐 제거). hidden 직후 RETURN_WINDOW 내 복귀 시
+  //       앱이 유지 실패한 것으로 보고 수동 fallback 재무장.
   // ============================================================
-  function markLaunched(source) {
-    if (!appLaunched) {
-      appLaunched = true;
-      log('앱 실행 감지! (via ' + source + ')', 'ok');
+  var LAUNCH = { launched: false, strong: false, hiddenAt: 0, fired: false };
+
+  function markHidden(source, strong) {
+    LAUNCH.hiddenAt = now();
+    if (!LAUNCH.launched) {
+      LAUNCH.launched = true;
+      LAUNCH.strong = !!strong;
+      log('앱 실행 감지 (via ' + source + ', ' + (strong ? 'strong' : 'weak') + ')', 'ok');
+    } else if (strong && !LAUNCH.strong) {
+      LAUNCH.strong = true;
     }
   }
+
+  function markVisible(source) {
+    // intent를 쏜 뒤, 화면을 벗어났다가 곧바로 돌아왔다면
+    // = 앱/브라우저가 포그라운드 유지에 실패한 것으로 간주.
+    if (LAUNCH.fired && LAUNCH.launched &&
+        (now() - LAUNCH.hiddenAt) < RETURN_WINDOW_MS) {
+      log('페이지 복귀 감지 (via ' + source + ') → 앱 유지 실패, fallback 재무장', 'err');
+      LAUNCH.launched = false;
+      LAUNCH.strong = false;
+      reArmManualFallback();
+    }
+  }
+
   document.addEventListener('visibilitychange', function() {
-    if (document.hidden) markLaunched('visibilitychange');
+    if (document.hidden) markHidden('visibilitychange', true);
+    else markVisible('visibilitychange');
   });
-  window.addEventListener('blur', function() { markLaunched('blur'); });
-  window.addEventListener('pagehide', function() { markLaunched('pagehide'); });
+  window.addEventListener('pagehide', function() { markHidden('pagehide', true); });
+  window.addEventListener('pageshow', function() { markVisible('pageshow'); });
+  window.addEventListener('focus', function() { markVisible('focus'); });
+
+  // blur는 weak 힌트: 실제 앱 전환이면 곧 document.hidden이 true가 된다.
+  // bare blur(IME/다이얼로그/chooser)는 화면이 유지되므로 무시 → 오탐 제거.
+  window.addEventListener('blur', function() {
+    setTimeout(function() {
+      if (document.hidden) markHidden('blur+hidden', true);
+      else log('blur 무시(화면 유지 → 오탐 가능성)', 'info');
+    }, 250);
+  });
 
   // ============================================================
-  // Step 1: 어필리에이트 클릭 등록 (듀얼 방식)
+  // Step 1: 어필리에이트 클릭 등록 (keepalive 듀얼)
   //
-  // - fetch(): no-cors 모드로 서버에 GET 요청 전송
-  //   → 서버 측 클릭 카운트 등록
-  //   → credentials:'omit' (쿠키 불필요 — 앱 경유 시 앱이 처리)
-  //
-  // - Image beacon: 동일 URL로 Image 요청 전송 (중복 보험)
-  //   → sub-resource 요청이므로 autoVerify에 가로채이지 않음
-  //
-  // - 둘 중 하나가 완료되면 callback 실행 (최대 800ms 대기)
+  // [ROBUST-B] fetch keepalive로 네비게이션 이후에도 GET 완주 보장.
+  //   → intent 발사가 in-flight 요청을 취소하지 못하므로, 응답을
+  //     "기다려야만" 클릭이 등록되던 의존을 끊는다.
+  //   - keepalive 지원 : floor(300ms)만 대기 후 진행(빠름 + 유실 없음)
+  //   - 미지원          : ceiling(2000ms)까지 대기, 응답 오면 즉시 진행
   // ============================================================
   function registerClick(callback) {
     if (!affUrl) {
@@ -164,13 +206,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       callback();
     }
 
-    // Method A: fetch
+    // keepalive 지원 여부 feature-detect
+    var supportsKeepalive = false;
+    try { supportsKeepalive = ('keepalive' in new Request('', {})); } catch (e) {}
+    log('keepalive 지원: ' + supportsKeepalive, 'info');
+
+    // Method A: fetch (keepalive)
     log('fetch 클릭 등록 시작...', 'info');
     try {
       fetch(affUrl, {
         method: 'GET',
         mode: 'no-cors',
-        credentials: 'omit'
+        credentials: 'omit',
+        keepalive: true
       }).then(function() {
         done('fetch');
       }).catch(function(e) {
@@ -181,29 +229,33 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       log('fetch 미지원: ' + e.message, 'err');
     }
 
-    // Method B: Image beacon
+    // Method B: Image beacon (2차 보험 — dispatch 즉시 전송)
     log('Image beacon 클릭 등록 시작...', 'info');
     try {
       var img = new Image();
-      img.onload = function() { done('img-load'); };
+      img.onload  = function() { done('img-load'); };
       img.onerror = function() { done('img-error'); };
       img.src = affUrl;
     } catch(e) {
       log('Image beacon 실패: ' + e.message, 'err');
     }
 
-    // Safety timeout: 800ms 후 무조건 진행
-    setTimeout(function() { done('timeout-800ms'); }, 800);
+    // 완료 판정: keepalive면 최소 floor만, 아니면 event-based + 여유 ceiling
+    if (supportsKeepalive) {
+      setTimeout(function() { done('keepalive-floor-' + CLICK_FLOOR_MS + 'ms'); }, CLICK_FLOOR_MS);
+    } else {
+      setTimeout(function() { done('timeout-' + CLICK_CEILING_MS + 'ms'); }, CLICK_CEILING_MS);
+    }
   }
 
   // ============================================================
   // Step 2: Intent URL 실행 (앱 실행)
-  //
-  // 방법 1: 숨겨진 iframe (WebView 호환성 높음)
-  // 방법 2: 150ms 후 window.location (iframe 실패 보완)
+  //   방법 1: 숨겨진 iframe (WebView 호환성 높음)
+  //   방법 2: INTENT_BACKUP_MS 후 window.location (iframe 실패 보완)
   // ============================================================
   function fireIntent() {
     log('Intent 실행 시작...', 'info');
+    LAUNCH.fired = true;   // 이 시점 이후의 복귀만 "앱 유지 실패"로 판정
 
     // 2a: Hidden iframe
     try {
@@ -216,9 +268,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       log('iframe 방식 실패: ' + e.message, 'err');
     }
 
-    // 2b: 150ms 후 window.location (backup)
+    // 2b: backup — window.location
     setTimeout(function() {
-      if (!appLaunched) {
+      if (!LAUNCH.launched) {
         log('window.location = intent URL (backup)', 'info');
         try {
           window.location.href = intentUrl;
@@ -226,33 +278,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           log('location 방식 실패: ' + e.message, 'err');
         }
       }
-    }, 150);
+    }, INTENT_BACKUP_MS);
   }
 
   // ============================================================
   // Step 3: Fallback — 외부 브라우저에서 열기
   //
-  // 핵심: WebView 안에서 hb.afl URL로 직접 이동하면
-  //        v14.2.0의 autoVerify가 가로채서 쿠키 미세팅
-  //
-  // 해결: Chrome/Samsung Browser Intent로 외부 브라우저 강제 실행
-  //       → 외부 브라우저에서 hb.afl 리다이렉트 체인 정상 완료
-  //       → 쿠키 세팅 + 매출 귀속 정상
-  //
-  // Fallback 체인:
-  //   ① Chrome Intent → ② Samsung Browser Intent → ③ 직접 이동
+  //   핵심: WebView 안에서 hb.afl URL로 직접 이동하면 v14.2.0의
+  //         autoVerify가 가로채서 쿠키 미세팅. 외부 브라우저로
+  //         강제 실행해 리다이렉트 체인을 정상 완주시킨다.
+  //   체인: ① Chrome Intent → ② Samsung Browser Intent → ③ 직접 이동
+  //         (Chrome/Samsung Intent에는 S.browser_fallback_url 미포함 —
+  //          미설치 시 WebView가 hb.afl로 조기 이동해 autoVerify에
+  //          가로채이는 문제를 차단. 이탈 여부는 document.hidden으로 판정.)
   // ============================================================
   function openInBrowser(url) {
     var path = url.replace(/^https?:\/\//, '');
 
     // ① Chrome
-    //   S.browser_fallback_url 제거(FIX-#3): 미설치 시 WebView가
-    //   hb.afl로 조기 이동해 autoVerify에 가로채이는 문제를 차단한다.
-    //   브라우저 실행 성공 여부는 document.hidden(화면 이탈)으로 판정.
     log('Chrome Intent 시도...', 'info');
     var chromeIntent = 'intent://' + path +
       '#Intent;scheme=https;package=com.android.chrome;end';
-
     try {
       window.location.href = chromeIntent;
     } catch(e) {
@@ -291,9 +337,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     };
   }
 
+  // 복귀 감지 시 재무장: 자동으로 브라우저를 낚아채면 사용자가 놀라므로,
+  // 비침습적으로 수동 버튼만 다시 노출한다.
+  function reArmManualFallback() {
+    document.getElementById('msg').textContent = 'うまく開けない場合は、下のボタンを押してください。';
+    showManualFallback();
+  }
+
   function doFallback() {
-    if (appLaunched) {
-      log('앱 실행 감지됨 → 자동 fallback 보류 (안전망 타이머가 별도 점검)', 'ok');
+    if (LAUNCH.launched) {
+      log('앱 실행 감지됨 → 자동 fallback 보류 (복귀/안전망 타이머가 별도 점검)', 'ok');
       return;
     }
 
@@ -301,10 +354,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     document.getElementById('msg').textContent = 'ブラウザで開きます...';
     showManualFallback();
 
-    // 자동 fallback (800ms 후, 그 사이 화면 이탈하지 않았을 때만)
+    // 자동 fallback (그 사이 화면 이탈하지 않았을 때만)
     setTimeout(function() {
-      if (!appLaunched && !document.hidden) openInBrowser(fallbackUrl);
-    }, 800);
+      if (!LAUNCH.launched && !document.hidden) openInBrowser(fallbackUrl);
+    }, AUTO_FALLBACK_MS);
   }
 
   // ============================================================
@@ -313,30 +366,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   if (isAndroid) {
     log('=== Android 흐름 시작 ===', 'info');
 
-    // ── 안전망(FIX-#1): blur 오탐 등으로 화면 전환이 안 될 때 대비 ──
-    // appLaunched 값과 무관하게, 4초 뒤에도 페이지가 화면에 떠 있으면
-    // (document.hidden=false → 실제로는 앱/브라우저 미실행) 수동 버튼 노출.
-    // 앱이 진짜 열렸다면 페이지는 backgrounded라 이 버튼은 보이지 않는다.
+    // ── 안전망(FIX-#1): 화면 전환이 끝내 안 되는 경우 대비 ──
+    // SAFETY_NET_MS 뒤에도 페이지가 화면에 떠 있으면(document.hidden=false)
+    // 수동 버튼 노출. 앱이 진짜 열렸다면 페이지는 backgrounded라 보이지 않음.
     setTimeout(function() {
       if (!document.hidden) {
         log('안전망 발동: 페이지가 여전히 화면에 있음 → 수동 버튼 노출', 'err');
         document.getElementById('msg').textContent = 'うまく開けない場合は、下のボタンを押してください。';
         showManualFallback();
       }
-    }, 4000);
+    }, SAFETY_NET_MS);
 
-    // Step 1 → (완료 대기) → Step 2 → (2.5초 대기) → Step 3
+    // Step 1 → (완료 대기) → Step 2 → (APP_DETECT_MS 대기) → Step 3
     registerClick(function() {
       fireIntent();
 
-      // 2.5초 후 앱 미실행 시 fallback
       setTimeout(function() {
-        if (!appLaunched) {
+        if (!LAUNCH.launched) {
           doFallback();
         } else {
           log('앱 정상 실행됨 → 완료', 'ok');
         }
-      }, 2500);
+      }, APP_DETECT_MS);
     });
 
   } else {
